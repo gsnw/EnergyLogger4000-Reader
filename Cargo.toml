@@ -1,0 +1,8 @@
+[package]
+name = "EnergyLogger4000-Reader"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+getopts = "0.2"
+chrono = "0.4"
