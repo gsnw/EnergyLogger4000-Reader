@@ -233,6 +233,44 @@ fn read_data_file(buffer: &[u8]) -> Result<Data, Box<dyn std::error::Error>> {
   Ok(result)
 }
 
+fn open_and_check_file(load_file: &str) -> Result<(), Box<dyn std::error::Error>> {
+  let mut file = fs::File::open(&load_file).unwrap();
+  let metadata = file.metadata().unwrap();
+
+  let mut buffer = Vec::new();
+  file.read_to_end(&mut buffer).unwrap();
+
+  if metadata.len() == 102 {
+      if buffer.len() >= 5 {
+        if &buffer[0..5] == b"INFO:" {
+          match read_info_file(&buffer) {
+            Ok(data) => {
+              print_info_file(&data);
+            }
+            Err(err) => {
+              eprintln!("[Error] {}", err);
+            }
+          }
+        }
+      }
+    } else if metadata.len() != 102 {
+      if buffer.len() >= 3 {
+        if &buffer[0..3] == [0xE0, 0xC5, 0xEA] {
+          match read_data_file(&buffer) {
+            Ok(data) => {
+              print_data_file(&data);
+            }
+            Err(err) => {
+              let error_message =format!("Info file has no end of file code");
+              return Err(Box::<dyn std::error::Error>::from(error_message));
+            }
+          }
+        }
+      }
+    }
+  Ok(())
+}
+
 fn main() -> io::Result<()> {
   let args: Vec<String> = env::args().collect();
 
@@ -263,38 +301,7 @@ fn main() -> io::Result<()> {
       return Ok(());
     }
 
-    let mut file = fs::File::open(&load_file).unwrap();
-    let metadata = file.metadata().unwrap();
-
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer).unwrap();
-    if metadata.len() == 102 {
-      if buffer.len() >= 5 {
-        if &buffer[0..5] == b"INFO:" {
-          match read_info_file(&buffer) {
-            Ok(data) => {
-              print_info_file(&data);
-            }
-            Err(err) => {
-              eprintln!("[Error] {}", err);
-            }
-          }
-        }
-      }
-    } else if metadata.len() != 102 {
-      if buffer.len() >= 3 {
-        if &buffer[0..3] == [0xE0, 0xC5, 0xEA] {
-          match read_data_file(&buffer) {
-            Ok(data) => {
-              print_data_file(&data);
-            }
-            Err(err) => {
-              eprintln!("[Error] {}", err);
-            }
-          }
-        }
-      }
-    }
+    let _ = open_and_check_file(&load_file);
   }
 
   if let Some(load_directory) = matches.opt_str("d") {
@@ -309,45 +316,9 @@ fn main() -> io::Result<()> {
       let entry = entry.unwrap();
       let path = entry.path();
       if path.is_file() {
-        if let Some(filename) = path.file_name() {
-          if let Some(filename_str) = filename.to_str() {
-            if filename_str.len() == 12 && filename_str.ends_with(".BIN") {
-              let _filename_prefix = &filename_str[..8];
-              let mut file = fs::File::open(&path).unwrap();
-              let metadata = file.metadata().unwrap();
-        
-              let mut buffer = Vec::new();
-              file.read_to_end(&mut buffer).unwrap();
-
-              if metadata.len() == 102 {
-                if buffer.len() >= 5 {
-                  if &buffer[0..5] == b"INFO:" {
-                    match read_info_file(&buffer) {
-                      Ok(data) => {
-                        print_info_file(&data);
-                      }
-                      Err(err) => {
-                        eprintln!("[Error] {}", err);
-                      }
-                    }
-                  }
-                }
-              } else if metadata.len() != 102 {
-                if buffer.len() >= 3 {
-                  if &buffer[0..3] == [0xE0, 0xC5, 0xEA] {
-                    match read_data_file(&buffer) {
-                      Ok(data) => {
-                        print_data_file(&data);
-                      }
-                      Err(err) => {
-                        eprintln!("[Error] {}", err);
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
+        if path.file_name().and_then(|f| f.to_str()).map_or(false, |s| s.ends_with(".BIN") && s.len() == 12) {
+          let load_file = path.as_path().to_str().expect("The path contains invalid UTF-8 data");
+          let _ = open_and_check_file(&load_file);
         }
       }
     }
