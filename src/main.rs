@@ -54,6 +54,17 @@ fn print_version() {
   println!("{} - v{}", PROGRAM, VERSION);
 }
 
+fn convert_tilde_homedir(path: &str) -> std::path::PathBuf {
+  if path.starts_with("~") {
+    let home_dir = env::var("HOME").expect("HOME environment variable not set");
+    let mut extended_path = std::path::PathBuf::from(home_dir);
+    extended_path.push(&path[2..]);
+    extended_path
+  }else{
+    std::path::PathBuf::from(path)
+  }
+}
+
 #[allow(dead_code)]
 fn print_debug_buffer(buffer: &[u8]) {
   println!("All bytes from the file:");
@@ -310,7 +321,7 @@ fn main() -> io::Result<()> {
       return Ok(());
     }
 
-    let entries = fs::read_dir(load_directory).unwrap();
+    let entries = fs::read_dir(convert_tilde_homedir(&load_directory)).unwrap();
 
     for entry in entries {
       let entry = entry.unwrap();

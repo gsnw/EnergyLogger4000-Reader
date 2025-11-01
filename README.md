@@ -34,10 +34,6 @@ Or a complete directory
 EnergyLogger4000-Reader -d /mnt/
 ```
 
-# Known bugs
-
-* An absolute path must always be specified. Unfortunately, a path such as `~/B08F9CD2.BIN` or `~/mypath/` does not work.
-
 # Reference
 
 * http://wiki.td-er.nl/index.php?title=Energy_Logger_3500
