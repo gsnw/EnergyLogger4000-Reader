@@ -1,4 +1,4 @@
-use std::{fs, env};
+use std::{env, fs};
 use std::io::{self, Read};
 
 use getopts::Options;
@@ -15,7 +15,6 @@ struct InfoDay {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 struct Info {
   total_power_consumption: f32,
   total_recorded_time: f32,
@@ -30,7 +29,6 @@ struct Info {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 struct DataSample {
   timestamp: String,
   voltage: f32,
@@ -39,10 +37,14 @@ struct DataSample {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 struct Data {
-  timestamp: String,
+  info: Option<Info>,
   data_samples: Vec<DataSample>,
+}
+
+enum DataKind {
+  Info(Info),
+  DataSample(Vec<DataSample>),
 }
 
 fn print_usage(opts: Options) {
@@ -93,8 +95,8 @@ fn print_info_file(info: &Info) {
   }
 }
 
-fn print_data_file(data: &Data) {
-  for record in &data.data_samples {
+fn print_data_file(data: &Vec<DataSample>) {
+  for record in data {
     print!("[{}] ", record.timestamp);
     print!("U={}V ", record.voltage);
     print!("I={}mA ", record.current);
@@ -199,7 +201,7 @@ fn read_info_file(buffer: &[u8]) -> Result<Info, Box<dyn std::error::Error>> {
   Ok(result) 
 }
 
-fn read_data_file(buffer: &[u8]) -> Result<Data, Box<dyn std::error::Error>> {
+fn read_data_file(buffer: &[u8]) -> Result<Vec<DataSample>, Box<dyn std::error::Error>> {
   let date_month = buffer[3];
   let date_day = buffer[4];
   let date_year = buffer[5];
@@ -236,15 +238,10 @@ fn read_data_file(buffer: &[u8]) -> Result<Data, Box<dyn std::error::Error>> {
     buffer_index += 5;
   }
 
-  let result = Data {
-    timestamp: timestamp.to_string(),
-    data_samples: data_samples,
-  };
-
-  Ok(result)
+  Ok(data_samples)
 }
 
-fn open_and_check_file(load_file: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn open_and_check_file(load_file: &str) -> Result<DataKind, Box<dyn std::error::Error>> {
   let mut file = fs::File::open(&load_file).unwrap();
   let metadata = file.metadata().unwrap();
 
@@ -256,10 +253,11 @@ fn open_and_check_file(load_file: &str) -> Result<(), Box<dyn std::error::Error>
         if &buffer[0..5] == b"INFO:" {
           match read_info_file(&buffer) {
             Ok(data) => {
-              print_info_file(&data);
+              return Ok(DataKind::Info(data))
             }
             Err(err) => {
-              eprintln!("[Error] {}", err);
+              let error_message =format!("Info file has no end of file code: {}", err);
+              return Err(Box::<dyn std::error::Error>::from(error_message))
             }
           }
         }
@@ -269,17 +267,18 @@ fn open_and_check_file(load_file: &str) -> Result<(), Box<dyn std::error::Error>
         if &buffer[0..3] == [0xE0, 0xC5, 0xEA] {
           match read_data_file(&buffer) {
             Ok(data) => {
-              print_data_file(&data);
+              return Ok(DataKind::DataSample(data))
             }
             Err(err) => {
-              let error_message =format!("Info file has no end of file code");
-              return Err(Box::<dyn std::error::Error>::from(error_message));
+              let error_message =format!("Info file has no end of file code: {}", err);
+              return Err(Box::<dyn std::error::Error>::from(error_message))
             }
           }
         }
       }
     }
-  Ok(())
+  
+  Err("Unrecognized file format".into())
 }
 
 fn main() -> io::Result<()> {
@@ -306,13 +305,21 @@ fn main() -> io::Result<()> {
     return Ok(());
   }
 
+  let mut collected_data = Data {
+    info: None,
+    data_samples: Vec::new()
+  };
+
   if let Some(load_file) = matches.opt_str("f") {
     if load_file.is_empty() {
       eprintln!("[Error] Option -f or --file has no parameter");
       return Ok(());
     }
 
-    let _ = open_and_check_file(&load_file);
+    match open_and_check_file(&load_file).unwrap() {
+      DataKind::Info(info_data) => collected_data.info = Some(info_data),
+      DataKind::DataSample(result_data) => collected_data.data_samples.extend(result_data)
+    }
   }
 
   if let Some(load_directory) = matches.opt_str("d") {
@@ -329,10 +336,35 @@ fn main() -> io::Result<()> {
       if path.is_file() {
         if path.file_name().and_then(|f| f.to_str()).map_or(false, |s| s.ends_with(".BIN") && s.len() == 12) {
           let load_file = path.as_path().to_str().expect("The path contains invalid UTF-8 data");
-          let _ = open_and_check_file(&load_file);
+
+          match open_and_check_file(&load_file) {
+            Ok(DataKind::Info(info_data)) => {
+              collected_data.info = Some(info_data);
+            }
+            Ok(DataKind::DataSample(result_data)) => {
+              collected_data.data_samples.extend(result_data);
+            }
+            Err(err) => {
+              eprintln!("Fehler beim Verarbeiten: {}", err);
+            }
+          }
         }
       }
     }
   }
+
+  println!("----- FINAL RESULT -----");
+  if let Some(info) = &collected_data.info {
+    print_info_file(&info);
+  }
+  if !collected_data.data_samples.is_empty() {
+    collected_data.data_samples.sort_by(|a, b| {
+      let ta = NaiveDateTime::parse_from_str(&a.timestamp, "%Y-%m-%d %H:%M:%S").unwrap();
+      let tb = NaiveDateTime::parse_from_str(&b.timestamp, "%Y-%m-%d %H:%M:%S").unwrap();
+      ta.cmp(&tb)
+    });
+    print_data_file(&collected_data.data_samples);
+  }
+
   Ok(())
 }
