@@ -1,6 +1,11 @@
 [package]
 name = "EnergyLogger4000-Reader"
 version = "0.1.0"
+description = "Reader for the Voltcraft Energy Logger 4000 device"
+license = "GPL-3.0-or-later"
+categories = ["command-line-utilities"]
+homepage = "https://www.gsnw.de/tools/energylogger4000-reader.php"
+repository = "https://github.com/gsnw/EnergyLogger4000-Reader"
 edition = "2021"
 
 [dependencies]
