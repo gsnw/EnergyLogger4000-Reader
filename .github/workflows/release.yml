@@ -1,0 +1,149 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-binaries:
+    name: Build binaries
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Get metadata (name + version)
+        id: meta
+        run: |
+          NAME=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].name')
+          VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          echo "name=$NAME" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Package binary (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          BIN_NAME="${{ steps.meta.outputs.name }}"
+          VERSION="${{ steps.meta.outputs.version }}"
+          OS=$(echo "$RUNNER_OS" | tr '[:upper:]' '[:lower:]')
+
+          ARCH=$(uname -m)
+          # Normalize arch names (optional, cleaner output)
+          if [[ "$ARCH" == "x86_64" ]]; then ARCH="x86_64"; fi
+          if [[ "$ARCH" == "aarch64" ]]; then ARCH="arm64"; fi
+
+          ARCHIVE_NAME="${BIN_NAME}-${VERSION}-${OS}-${ARCH}"
+
+          mkdir dist
+          cp target/release/${BIN_NAME} dist/ || cp target/release/* dist/
+
+          tar -czf ${ARCHIVE_NAME}.tar.gz -C dist .
+
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            shasum -a 256 ${ARCHIVE_NAME}.tar.gz > ${ARCHIVE_NAME}.tar.gz.sha256
+          else
+            sha256sum ${ARCHIVE_NAME}.tar.gz > ${ARCHIVE_NAME}.tar.gz.sha256
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ runner.os }}
+          path: |
+            *.tar.gz
+            *.tar.gz.sha256
+            *.zip
+
+  crates-io:
+    name: Build and Publish crates.io
+    needs: build-binaries
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo package check
+        run: cargo package
+
+      - name: Verify publish (dry-run)
+        run: cargo publish --dry-run
+      
+      - name: Check version on crates.io
+        run: |
+          CRATE_NAME=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].name')
+          LOCAL_VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+
+          echo "Crate: $CRATE_NAME"
+          echo "Version: $LOCAL_VERSION"
+
+          if curl -s https://crates.io/api/v1/crates/$CRATE_NAME | jq -e ".crate.max_version == \"$LOCAL_VERSION\"" ; then
+            echo "Version already published!"
+            exit 1
+          fi
+
+      - name: Publish to crates.io
+        run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  github-release:
+    name: Create GitHub Release
+    needs: build-binaries
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Extract latest changelog entry
+        id: changelog
+        run: |
+          CHANGELOG=$(awk '
+            BEGIN { found=0 }
+            /^[^[:space:]].*\([0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\)/ {
+              if (found) exit
+              found=1
+            }
+            found { print }
+          ' CHANGELOG.md)
+
+          echo "CHANGELOG<<EOF" >> $GITHUB_ENV
+          echo "$CHANGELOG" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Get version
+        id: meta
+        run: |
+          VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.meta.outputs.version }}
+          name: v${{ steps.meta.outputs.version }}
+          body: ${{ env.CHANGELOG }}
+          files: artifacts/**/*
