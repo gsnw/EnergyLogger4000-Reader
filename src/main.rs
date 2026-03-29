@@ -345,7 +345,7 @@ fn main() -> io::Result<()> {
               collected_data.data_samples.extend(result_data);
             }
             Err(err) => {
-              eprintln!("Fehler beim Verarbeiten: {}", err);
+              eprintln!("Error during processing: {}", err);
             }
           }
         }
