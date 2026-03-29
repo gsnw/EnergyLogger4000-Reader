@@ -56,14 +56,14 @@ fn print_version() {
   println!("{} - v{}", PROGRAM, VERSION);
 }
 
-fn convert_tilde_homedir(path: &str) -> std::path::PathBuf {
+fn convert_tilde_homedir(path: &str) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
   if path.starts_with("~") {
-    let home_dir = env::var("HOME").expect("HOME environment variable not set");
+    let home_dir = env::var("HOME")?;
     let mut extended_path = std::path::PathBuf::from(home_dir);
     extended_path.push(&path[2..]);
-    extended_path
+    Ok(extended_path)
   }else{
-    std::path::PathBuf::from(path)
+    Ok(std::path::PathBuf::from(path))
   }
 }
 
@@ -178,7 +178,7 @@ fn read_info_file(buffer: &[u8]) -> Result<Info, Box<dyn std::error::Error>> {
   let date_day = buffer[96];
   let date_year = buffer[97];
 
-  let timestamp = NaiveDateTime::parse_from_str(&format!("20{:02}-{:02}-{:02} {:02}:{:02}:00", date_year, date_month, date_day, time_hour, time_minute), "%Y-%m-%d %H:%M:%S").expect("Invalid Date/Time-Format");
+  let timestamp = NaiveDateTime::parse_from_str(&format!("20{:02}-{:02}-{:02} {:02}:{:02}:00", date_year, date_month, date_day, time_hour, time_minute), "%Y-%m-%d %H:%M:%S").map_err(|e| format!("Invalid Date/Time-Format in info file: {}", e))?;
 
   if buffer[98..102] != [0xFF, 0xFF, 0xFF, 0xFF] {
     let error_message =format!("Info file has no end of file code");
@@ -208,7 +208,7 @@ fn read_data_file(buffer: &[u8]) -> Result<Vec<DataSample>, Box<dyn std::error::
   let time_hour = buffer[6];
   let time_minute = buffer[7];
 
-  let timestamp = NaiveDateTime::parse_from_str(&format!("20{:02}-{:02}-{:02} {:02}:{:02}:00", date_year, date_month, date_day, time_hour, time_minute), "%Y-%m-%d %H:%M:%S").expect("Invalid Date/Time-Format");
+  let timestamp = NaiveDateTime::parse_from_str(&format!("20{:02}-{:02}-{:02} {:02}:{:02}:00", date_year, date_month, date_day, time_hour, time_minute), "%Y-%m-%d %H:%M:%S").map_err(|e| format!("Invalid Date/Time-Format in data file: {}", e))?;
 
   let mut data_samples: Vec<DataSample> = Vec::new();
   let mut start_timestamp = timestamp;
@@ -242,11 +242,11 @@ fn read_data_file(buffer: &[u8]) -> Result<Vec<DataSample>, Box<dyn std::error::
 }
 
 fn open_and_check_file(load_file: &str) -> Result<DataKind, Box<dyn std::error::Error>> {
-  let mut file = fs::File::open(&load_file).unwrap();
-  let metadata = file.metadata().unwrap();
+  let mut file = fs::File::open(load_file).map_err(|e| format!("Failed to open file '{}': {}", load_file, e))?;
+  let metadata = file.metadata().map_err(|e| format!("Failed to read metadata for '{}': {}", load_file, e))?;
 
   let mut buffer = Vec::new();
-  file.read_to_end(&mut buffer).unwrap();
+  file.read_to_end(&mut buffer).map_err(|e| format!("Failed to read file '{}': {}", load_file, e))?;
 
   if metadata.len() == 102 {
       if buffer.len() >= 5 {
@@ -256,8 +256,7 @@ fn open_and_check_file(load_file: &str) -> Result<DataKind, Box<dyn std::error::
               return Ok(DataKind::Info(data))
             }
             Err(err) => {
-              let error_message =format!("Info file has no end of file code: {}", err);
-              return Err(Box::<dyn std::error::Error>::from(error_message))
+              return Err(format!("Failed to parse info file '{}': {}", load_file, err).into());
             }
           }
         }
@@ -270,15 +269,14 @@ fn open_and_check_file(load_file: &str) -> Result<DataKind, Box<dyn std::error::
               return Ok(DataKind::DataSample(data))
             }
             Err(err) => {
-              let error_message =format!("Info file has no end of file code: {}", err);
-              return Err(Box::<dyn std::error::Error>::from(error_message))
+              return Err(format!("Failed to parse data file '{}': {}", load_file, err).into());
             }
           }
         }
       }
     }
   
-  Err("Unrecognized file format".into())
+  Err(format!("Unrecognized file format: '{}'", load_file).into())
 }
 
 fn main() -> io::Result<()> {
@@ -292,7 +290,10 @@ fn main() -> io::Result<()> {
 
   let matches = match opts.parse(&args[1..]) {
     Ok(m) => { m }
-    Err(f) => { panic!("{}", f.to_string()) }
+    Err(f) => {
+      eprintln!("[Error] Failed to parse arguments: {}", f);
+      return Ok(());
+    }
   };
 
   if matches.opt_present("h") {
@@ -316,9 +317,13 @@ fn main() -> io::Result<()> {
       return Ok(());
     }
 
-    match open_and_check_file(&load_file).unwrap() {
-      DataKind::Info(info_data) => collected_data.info = Some(info_data),
-      DataKind::DataSample(result_data) => collected_data.data_samples.extend(result_data)
+    match open_and_check_file(&load_file) {
+      Ok(DataKind::Info(info_data)) => collected_data.info = Some(info_data),
+      Ok(DataKind::DataSample(result_data)) => collected_data.data_samples.extend(result_data),
+      Err(err) => {
+        eprintln!("[Error] {}", err);
+        return Ok(());
+      }
     }
   }
 
@@ -328,14 +333,41 @@ fn main() -> io::Result<()> {
       return Ok(());
     }
 
-    let entries = fs::read_dir(convert_tilde_homedir(&load_directory)).unwrap();
+    let dir_path = match convert_tilde_homedir(&load_directory) {
+      Ok(p) => p,
+      Err(err) => {
+        eprintln!("[Error] Failed to resolve directory path '{}': {}", load_directory, err);
+        return Ok(());
+      }
+    };
+
+    let entries = match fs::read_dir(&dir_path) {
+      Ok(e) => e,
+      Err(err) => {
+        eprintln!("[Error] Failed to read directory '{}': {}", dir_path.display(), err);
+        return Ok(());
+      }
+    };
 
     for entry in entries {
-      let entry = entry.unwrap();
+      let entry = match entry {
+        Ok(e) => e,
+        Err(err) => {
+          eprintln!("[Error] Failed to read directory entry: {}", err);
+          continue;
+        }
+      };
+
       let path = entry.path();
       if path.is_file() {
         if path.file_name().and_then(|f| f.to_str()).map_or(false, |s| s.ends_with(".BIN") && s.len() == 12) {
-          let load_file = path.as_path().to_str().expect("The path contains invalid UTF-8 data");
+          let load_file = match path.as_path().to_str() {
+            Some(s) => s,
+            None => {
+              eprintln!("[Error] Path contains invalid UTF-8 data: {:?}", path);
+              continue;
+            }
+          };
 
           match open_and_check_file(&load_file) {
             Ok(DataKind::Info(info_data)) => {
@@ -345,7 +377,7 @@ fn main() -> io::Result<()> {
               collected_data.data_samples.extend(result_data);
             }
             Err(err) => {
-              eprintln!("Error during processing: {}", err);
+              eprintln!("[Error] {}", err);
             }
           }
         }
@@ -359,8 +391,8 @@ fn main() -> io::Result<()> {
   }
   if !collected_data.data_samples.is_empty() {
     collected_data.data_samples.sort_by(|a, b| {
-      let ta = NaiveDateTime::parse_from_str(&a.timestamp, "%Y-%m-%d %H:%M:%S").unwrap();
-      let tb = NaiveDateTime::parse_from_str(&b.timestamp, "%Y-%m-%d %H:%M:%S").unwrap();
+      let ta = NaiveDateTime::parse_from_str(&a.timestamp, "%Y-%m-%d %H:%M:%S").unwrap_or_default();
+      let tb = NaiveDateTime::parse_from_str(&b.timestamp, "%Y-%m-%d %H:%M:%S").unwrap_or_default();
       ta.cmp(&tb)
     });
     print_data_file(&collected_data.data_samples);
